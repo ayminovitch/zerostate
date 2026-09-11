@@ -97,6 +97,14 @@ export class StateStore {
     return { namespaces: this.namespaces.size, totalKeys: keys, tombstones, maxStoreSeq: maxSeq };
   }
 
+  // Snapshot of namespace → storeSeq. Used by GossipEngine to compute
+  // which namespaces to request from a peer and detect local divergence.
+  digest(): Map<string, bigint> {
+    const d = new Map<string, bigint>();
+    for (const [ns, set] of this.namespaces) d.set(ns, set.storeSeq);
+    return d;
+  }
+
   // ── Private ──────────────────────────────────────────────────────────────────
 
   private onDelta(env: Envelope): void {
