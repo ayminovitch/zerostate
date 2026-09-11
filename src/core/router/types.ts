@@ -1,7 +1,7 @@
-export const enum BackpressureLevel {
+export enum BackpressureLevel {
   NONE = 0,
-  WARN = 1,  // token fill ratio below warnThreshold
-  FULL = 2,  // tokens exhausted — caller must drop or queue
+  WARN = 1,
+  FULL = 2,
 }
 
 export interface RouterCfg {

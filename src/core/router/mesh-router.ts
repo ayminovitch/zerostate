@@ -81,7 +81,11 @@ export class MeshRouter extends EventEmitter<MeshRouterEvents> {
     if (peer.state !== PeerState.ALIVE) return;
     const peerId = nodeIdToHex(peer.id);
     this.probeNs.set(peerId, process.hrtime.bigint());
-    this.node.dialRouter(peer.routerAddr);
+    try {
+      this.node.dialRouter(peer.routerAddr);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EINVAL") throw err;
+    }
     const payload: SyncReqPayload = { ns, since };
     await this.node.rpcSend(MessageType.SYNC_REQ, payload);
   }
