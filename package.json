@@ -4,13 +4,13 @@
   "description": "Decentralized, low-latency live state-sync mesh built on ZeroMQ and CRDTs",
   "author": "Aymen Hammami (https://aymen-hammami.com)",
   "license": "MIT",
-  "homepage": "https://github.com/aymen-hammami/zerostate#readme",
+  "homepage": "https://github.com/ayminovitch/zerostate#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aymen-hammami/zerostate.git"
+    "url": "git+https://github.com/ayminovitch/zerostate.git"
   },
   "bugs": {
-    "url": "https://github.com/aymen-hammami/zerostate/issues"
+    "url": "https://github.com/ayminovitch/zerostate/issues"
   },
   "keywords": [
     "distributed-systems",
@@ -38,8 +38,8 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types":   "./dist/index.d.ts",
-      "import":  "./dist/index.js",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     }
   },
@@ -49,10 +49,10 @@
     "README.md"
   ],
   "scripts": {
-    "build":          "tsup && tsc --project tsconfig.build.json --emitDeclarationOnly --outDir dist",
-    "dev":            "tsup --watch",
-    "typecheck":      "tsc --noEmit",
-    "smoke":          "tsx src/smoke.ts",
+    "build": "tsup && tsc --project tsconfig.build.json --emitDeclarationOnly --outDir dist",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx src/smoke.ts",
     "prepublishOnly": "npm run build && npm run typecheck"
   },
   "dependencies": {
@@ -64,12 +64,12 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.2",
-    "tsup":        "^8.5.1",
-    "tsx":         "^4.23.13",
-    "typescript":  "^7.0.2"
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
   },
   "allowScripts": {
-    "zeromq@6.8.0":  true,
+    "zeromq@6.8.0": true,
     "esbuild@0.28.2": true,
     "esbuild@0.27.7": true,
     "fsevents@2.3.3": true
