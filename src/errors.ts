@@ -34,3 +34,7 @@ export class LifecycleError extends TransportError {
 export class ContextError extends ZeroStateError {
   override readonly name: string = "ContextError";
 }
+
+export class NodeError extends ZeroStateError {
+  override readonly name: string = "NodeError";
+}
