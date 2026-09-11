@@ -1,15 +1,16 @@
 import { Node }          from "./core/node/index.js";
 import { StateStore }     from "./core/crdt/index.js";
-import { GossipEngine }   from "./core/sync/index.js";
+import { MeshRouter, BackpressureLevel } from "./core/router/index.js";
 import { mkNodeId, nodeIdToHex } from "./core/transport/index.js";
 import { BASE_PUB_PORT, BASE_ROUTER_PORT } from "./core/transport/constants.js";
 
 const enc = new TextEncoder();
-const dec = new TextDecoder();
 const key = (s: string) => enc.encode(s);
 const val = (s: string) => enc.encode(s);
 
-function makeStack(offset: number) {
+import type { RouterCfg } from "./core/router/index.js";
+
+function makeStack(offset: number, routerCfg?: Partial<RouterCfg>) {
   const nodeId = mkNodeId();
   const cfg = {
     nodeId,
@@ -19,21 +20,15 @@ function makeStack(offset: number) {
   };
   const node   = new Node(cfg);
   const store  = new StateStore(node);
-  const gossip = new GossipEngine(node, store, {
-    fanout:        1,
-    minIntervalMs: 200,
-    intervalMs:    500,
-    maxIntervalMs: 2_000,
-    stableRoundsBeforeBackoff: 2,
-  });
-  return { node, store, gossip, cfg };
+  const router = new MeshRouter(node, store, routerCfg);
+  return { node, store, router, cfg };
 }
 
-async function waitPeerUp(observer: Node, targetId: Uint8Array, timeout = 3_000): Promise<void> {
+async function waitPeerUp(observer: Node, target: Uint8Array): Promise<void> {
   return new Promise((res, rej) => {
-    const t = setTimeout(() => rej(new Error("timeout: peer:up")), timeout);
-    observer.on("peer:up", (entry) => {
-      if (nodeIdToHex(entry.id) !== nodeIdToHex(targetId as Parameters<typeof nodeIdToHex>[0])) return;
+    const t = setTimeout(() => rej(new Error("timeout: peer:up")), 3_000);
+    observer.on("peer:up", (e) => {
+      if (nodeIdToHex(e.id) !== nodeIdToHex(target as Parameters<typeof nodeIdToHex>[0])) return;
       clearTimeout(t); res();
     });
   });
@@ -41,20 +36,19 @@ async function waitPeerUp(observer: Node, targetId: Uint8Array, timeout = 3_000)
 
 async function main(): Promise<void> {
   console.log("═══════════════════════════════════════");
-  console.log("  ZeroState GossipEngine — Smoke Test");
+  console.log("  ZeroState MeshRouter — Smoke Test");
   console.log("═══════════════════════════════════════\n");
 
-  const A = makeStack(7);
-  const B = makeStack(8);
+  // Tiny bucket so we can trigger back-pressure in tests without flooding
+  const A = makeStack(9,  { maxTokens: 10, refillRatePerMs: 0.5, warnThreshold: 0.30 });
+  const B = makeStack(10);
 
   A.node.on("fatal", (e) => console.error("A FATAL:", e));
   B.node.on("fatal", (e) => console.error("B FATAL:", e));
-  A.gossip.on("error", (e) => console.warn("A gossip err:", e.message));
-  B.gossip.on("error", (e) => console.warn("B gossip err:", e.message));
 
   await Promise.all([A.node.start(), B.node.start()]);
   A.store.start(); B.store.start();
-  A.gossip.start(); B.gossip.start();
+  A.router.start(); B.router.start();
 
   await A.node.connect(B.cfg.pubAddr, B.cfg.routerAddr);
   await B.node.connect(A.cfg.pubAddr, A.cfg.routerAddr);
@@ -64,66 +58,77 @@ async function main(): Promise<void> {
   ]);
   console.log("peers up\n");
 
-  // ── Test 1: gossip round fires and reports stats ───────────────────────────
-  console.log("── Test 1: Gossip round fires ───────────────────────────────────");
-  const roundFired = new Promise<GossipRoundStats>((res, rej) => {
-    const t = setTimeout(() => rej(new Error("timeout: gossip round")), 3_000);
-    A.gossip.on("round", (stats) => { clearTimeout(t); res(stats); });
-  });
-  const stats1 = await roundFired;
-  console.log(`✅ A gossip round=${stats1.round}  peers=${stats1.peersContacted}  interval=${stats1.intervalMs}ms`);
+  // ── Test 1: successful rate-limited sends ──────────────────────────────────
+  console.log("── Test 1: Rate-limited delta publishing ───────────────────────");
+  let sent = 0;
+  for (let i = 0; i < 8; i++) {
+    const ok = await A.router.tryPublishDelta({
+      ns:        "test:ns",
+      mutations: [[key(`k${i}`), val(`v${i}`), Date.now()]],
+    });
+    if (ok) sent++;
+  }
+  console.log(`✅ sent ${sent}/8 deltas  tokens left=${A.router.tokensAvailable}  ratio=${A.router.tokenFillRatio.toFixed(2)}`);
 
-  // ── Test 2: state written on A converges to B via gossip ───────────────────
-  console.log("\n── Test 2: Gossip-driven convergence ───────────────────────────");
-  await A.store.mutate("mesh:state", key("config:color"), val("#ff6b35"));
+  // ── Test 2: back-pressure WARN then FULL ─────────────────────────────────
+  console.log("\n── Test 2: Back-pressure detection ─────────────────────────────");
+  const events: string[] = [];
+  A.router.on("backpressure:warn",  () => events.push("WARN"));
+  A.router.on("backpressure:full",  () => events.push("FULL"));
+  A.router.on("backpressure:clear", () => events.push("CLEAR"));
 
-  // Wait for up to 3 gossip rounds for B to converge
-  const converged = new Promise<void>((res, rej) => {
-    const t = setTimeout(() => rej(new Error("timeout: convergence")), 5_000);
-    const check = () => {
-      const v = B.store.get("mesh:state", key("config:color"));
-      if (v) { clearTimeout(t); res(); return; }
-      B.gossip.once("round", check);
-    };
-    B.gossip.once("round", check);
-  });
+  // Drain remaining tokens
+  let dropped = 0;
+  for (let i = 0; i < 20; i++) {
+    const ok = await A.router.tryPublishDelta({
+      ns:        "test:ns",
+      mutations: [[key(`drain${i}`), val("x"), Date.now()]],
+    });
+    if (!ok) dropped++;
+  }
+  console.log(`✅ backpressure events: [${events.join(", ")}]`);
+  console.log(`✅ dropped ${dropped} messages at FULL  level=${BackpressureLevel[A.router.backpressureLevel]}`);
 
-  await converged;
-  const v = B.store.get("mesh:state", key("config:color"))!;
-  console.log(`✅ B converged: config:color = ${dec.decode(v)}`);
-
-  // ── Test 3: adaptive backoff after stable rounds ───────────────────────────
-  console.log("\n── Test 3: Adaptive interval backoff ───────────────────────────");
-
-  // Collect interval readings over several stable rounds
-  const intervals: number[] = [];
-  await new Promise<void>((res) => {
-    let collected = 0;
-    const handler = (s: GossipRoundStats) => {
-      intervals.push(s.intervalMs);
-      collected++;
-      if (collected >= 5) { A.gossip.off("round", handler); res(); }
-    };
-    A.gossip.on("round", handler);
+  // ── Test 3: RTT probe and route scoring ──────────────────────────────────
+  console.log("\n── Test 3: RTT probing and route scoring ────────────────────────");
+  const rttSamples: number[] = [];
+  B.router.on("rtt:sample", (pid, rttMs, ewma) => {
+    rttSamples.push(rttMs);
+    console.log(`   RTT sample: ${rttMs.toFixed(2)}ms  ewma=${ewma.toFixed(2)}ms  peer=${pid.slice(0, 8)}…`);
   });
 
-  const backedOff = intervals[intervals.length - 1]! > intervals[0]!;
-  console.log(`✅ intervals: [${intervals.join(", ")}]ms`);
-  console.log(`✅ backed off after stable rounds: ${backedOff}`);
+  // Send 3 probes from B → A to build up RTT samples
+  const alivePeers = Array.from(B.node.peers);
+  const peerA = alivePeers[0];
+  if (peerA) {
+    for (const ns of ["probe:ns"]) {
+      await B.router.probe(peerA, ns, 0n);
+      await new Promise<void>((r) => setTimeout(r, 100));
+      await B.router.probe(peerA, ns, 0n);
+      await new Promise<void>((r) => setTimeout(r, 100));
+      await B.router.probe(peerA, ns, 0n);
+      await new Promise<void>((r) => setTimeout(r, 200));
+    }
+  }
+
+  console.log(`✅ RTT samples collected: ${rttSamples.length}`);
+  console.log("   Route scores:", Object.fromEntries(
+    [...B.router.routeScores().entries()].map(([k, v]) => [k.slice(0, 8), v.score.toFixed(1)])
+  ));
+
+  const best = B.router.bestPeer();
+  console.log(`✅ bestPeer: ${best ? nodeIdToHex(best.id).slice(0, 8) + "…" : "none"}`);
 
   // ── Stats ─────────────────────────────────────────────────────────────────
   console.log("\n── Stats ────────────────────────────────────────────────────────");
-  console.log("A crdt:", A.store.stats);
-  console.log("B crdt:", B.store.stats);
-  console.log(`A gossip interval: ${A.gossip.currentIntervalMs}ms`);
-  console.log(`B gossip interval: ${B.gossip.currentIntervalMs}ms`);
+  console.log(`A tokens: ${A.router.tokensAvailable}/${10}  bp=${BackpressureLevel[A.router.backpressureLevel]}`);
+  console.log(`B tokens: ${B.router.tokensAvailable}  bp=${BackpressureLevel[B.router.backpressureLevel]}`);
+  console.log("A transport:", A.node.transportStats);
 
-  A.gossip.stop(); B.gossip.stop();
+  A.router.stop(); B.router.stop();
   A.store.stop();  B.store.stop();
   await Promise.all([A.node.stop(), B.node.stop()]);
   console.log("\n✅ all passed\n");
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import type { GossipRoundStats } from "./core/sync/index.js";
 main().catch((e) => { console.error("FAIL:", e); process.exit(1); });
