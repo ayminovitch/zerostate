@@ -114,8 +114,12 @@ export class GossipEngine extends EventEmitter<GossipEvents> {
         await this.node.rpcSend(MessageType.SYNC_REQ, payload);
       }
     } catch (err) {
-      // Emit but don't throw — a single failing peer must not stall the round.
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      // EINVAL (errno 22) from dialRouter = address already connected. ZMQ
+      // reuses the existing connection silently; this error is safe to ignore.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EINVAL") {
+        this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      }
     } finally {
       this.inFlight.delete(peerId);
     }

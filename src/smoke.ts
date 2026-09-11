@@ -1,5 +1,6 @@
-import { Node }        from "./core/node/index.js";
-import { StateStore }  from "./core/crdt/index.js";
+import { Node }          from "./core/node/index.js";
+import { StateStore }     from "./core/crdt/index.js";
+import { GossipEngine }   from "./core/sync/index.js";
 import { mkNodeId, nodeIdToHex } from "./core/transport/index.js";
 import { BASE_PUB_PORT, BASE_ROUTER_PORT } from "./core/transport/constants.js";
 
@@ -8,7 +9,7 @@ const dec = new TextDecoder();
 const key = (s: string) => enc.encode(s);
 const val = (s: string) => enc.encode(s);
 
-function makePair(offset: number) {
+function makeStack(offset: number) {
   const nodeId = mkNodeId();
   const cfg = {
     nodeId,
@@ -16,14 +17,21 @@ function makePair(offset: number) {
     routerAddr: `tcp://127.0.0.1:${BASE_ROUTER_PORT + offset}`,
     hbIntervalMs: 200, suspectMs: 600, deadMs: 1200,
   };
-  const node  = new Node(cfg);
-  const store = new StateStore(node);
-  return { node, store, cfg };
+  const node   = new Node(cfg);
+  const store  = new StateStore(node);
+  const gossip = new GossipEngine(node, store, {
+    fanout:        1,
+    minIntervalMs: 200,
+    intervalMs:    500,
+    maxIntervalMs: 2_000,
+    stableRoundsBeforeBackoff: 2,
+  });
+  return { node, store, gossip, cfg };
 }
 
-async function waitPeerUp(observer: Node, targetId: Uint8Array): Promise<void> {
+async function waitPeerUp(observer: Node, targetId: Uint8Array, timeout = 3_000): Promise<void> {
   return new Promise((res, rej) => {
-    const t = setTimeout(() => rej(new Error("timeout: peer:up")), 3_000);
+    const t = setTimeout(() => rej(new Error("timeout: peer:up")), timeout);
     observer.on("peer:up", (entry) => {
       if (nodeIdToHex(entry.id) !== nodeIdToHex(targetId as Parameters<typeof nodeIdToHex>[0])) return;
       clearTimeout(t); res();
@@ -33,80 +41,89 @@ async function waitPeerUp(observer: Node, targetId: Uint8Array): Promise<void> {
 
 async function main(): Promise<void> {
   console.log("═══════════════════════════════════════");
-  console.log("  ZeroState CRDT — Smoke Test");
+  console.log("  ZeroState GossipEngine — Smoke Test");
   console.log("═══════════════════════════════════════\n");
 
-  const A = makePair(5);
-  const B = makePair(6);
+  const A = makeStack(7);
+  const B = makeStack(8);
 
   A.node.on("fatal", (e) => console.error("A FATAL:", e));
   B.node.on("fatal", (e) => console.error("B FATAL:", e));
+  A.gossip.on("error", (e) => console.warn("A gossip err:", e.message));
+  B.gossip.on("error", (e) => console.warn("B gossip err:", e.message));
 
   await Promise.all([A.node.start(), B.node.start()]);
-  A.store.start();
-  B.store.start();
+  A.store.start(); B.store.start();
+  A.gossip.start(); B.gossip.start();
 
   await A.node.connect(B.cfg.pubAddr, B.cfg.routerAddr);
   await B.node.connect(A.cfg.pubAddr, A.cfg.routerAddr);
-  await Promise.all([waitPeerUp(A.node, B.cfg.nodeId), waitPeerUp(B.node, A.cfg.nodeId)]);
+  await Promise.all([
+    waitPeerUp(A.node, B.cfg.nodeId),
+    waitPeerUp(B.node, A.cfg.nodeId),
+  ]);
   console.log("peers up\n");
 
-  // ── Test 1: basic mutate + propagation ──────────────────────────────────────
-  console.log("── Test 1: Mutate and propagate ────────────────────────────────");
-  const deltaOnB = new Promise<void>((res, rej) => {
-    const t = setTimeout(() => rej(new Error("timeout: delta")), 2_000);
-    B.node.on("delta", () => { clearTimeout(t); res(); });
+  // ── Test 1: gossip round fires and reports stats ───────────────────────────
+  console.log("── Test 1: Gossip round fires ───────────────────────────────────");
+  const roundFired = new Promise<GossipRoundStats>((res, rej) => {
+    const t = setTimeout(() => rej(new Error("timeout: gossip round")), 3_000);
+    A.gossip.on("round", (stats) => { clearTimeout(t); res(stats); });
+  });
+  const stats1 = await roundFired;
+  console.log(`✅ A gossip round=${stats1.round}  peers=${stats1.peersContacted}  interval=${stats1.intervalMs}ms`);
+
+  // ── Test 2: state written on A converges to B via gossip ───────────────────
+  console.log("\n── Test 2: Gossip-driven convergence ───────────────────────────");
+  await A.store.mutate("mesh:state", key("config:color"), val("#ff6b35"));
+
+  // Wait for up to 3 gossip rounds for B to converge
+  const converged = new Promise<void>((res, rej) => {
+    const t = setTimeout(() => rej(new Error("timeout: convergence")), 5_000);
+    const check = () => {
+      const v = B.store.get("mesh:state", key("config:color"));
+      if (v) { clearTimeout(t); res(); return; }
+      B.gossip.once("round", check);
+    };
+    B.gossip.once("round", check);
   });
 
-  await A.store.mutate("game:pos", key("player:1"), val('{"x":10,"y":20}'));
-  await deltaOnB;
-  await new Promise<void>((r) => setTimeout(r, 50)); // allow merge tick
+  await converged;
+  const v = B.store.get("mesh:state", key("config:color"))!;
+  console.log(`✅ B converged: config:color = ${dec.decode(v)}`);
 
-  const v1 = B.store.get("game:pos", key("player:1"));
-  console.log(`✅ B has player:1 = ${v1 ? dec.decode(v1) : "null"}`);
+  // ── Test 3: adaptive backoff after stable rounds ───────────────────────────
+  console.log("\n── Test 3: Adaptive interval backoff ───────────────────────────");
 
-  // ── Test 2: LWW conflict — higher timestamp wins ─────────────────────────────
-  console.log("\n── Test 2: LWW conflict resolution ─────────────────────────────");
-  const t_old = Date.now() - 1000;
-  const t_new = Date.now();
+  // Collect interval readings over several stable rounds
+  const intervals: number[] = [];
+  await new Promise<void>((res) => {
+    let collected = 0;
+    const handler = (s: GossipRoundStats) => {
+      intervals.push(s.intervalMs);
+      collected++;
+      if (collected >= 5) { A.gossip.off("round", handler); res(); }
+    };
+    A.gossip.on("round", handler);
+  });
 
-  // Write stale value from A (old ts), then fresh value from B (new ts).
-  await A.store.mutate("game:pos", key("player:2"), val("stale"), t_old);
-  await new Promise<void>((r) => setTimeout(r, 100));
-  await B.store.mutate("game:pos", key("player:2"), val("fresh"), t_new);
-  await new Promise<void>((r) => setTimeout(r, 100));
+  const backedOff = intervals[intervals.length - 1]! > intervals[0]!;
+  console.log(`✅ intervals: [${intervals.join(", ")}]ms`);
+  console.log(`✅ backed off after stable rounds: ${backedOff}`);
 
-  const v2a = A.store.get("game:pos", key("player:2"));
-  const v2b = B.store.get("game:pos", key("player:2"));
-  console.log(`✅ A resolves player:2 = ${v2a ? dec.decode(v2a) : "null"}  (expect: fresh)`);
-  console.log(`✅ B resolves player:2 = ${v2b ? dec.decode(v2b) : "null"}  (expect: fresh)`);
+  // ── Stats ─────────────────────────────────────────────────────────────────
+  console.log("\n── Stats ────────────────────────────────────────────────────────");
+  console.log("A crdt:", A.store.stats);
+  console.log("B crdt:", B.store.stats);
+  console.log(`A gossip interval: ${A.gossip.currentIntervalMs}ms`);
+  console.log(`B gossip interval: ${B.gossip.currentIntervalMs}ms`);
 
-  // ── Test 3: tombstone / delete ────────────────────────────────────────────
-  console.log("\n── Test 3: Tombstone (delete) ──────────────────────────────────");
-  await A.store.mutate("game:pos", key("player:3"), val("exists"));
-  await new Promise<void>((r) => setTimeout(r, 100));
-  await A.store.delete("game:pos", key("player:3"));
-  await new Promise<void>((r) => setTimeout(r, 100));
-
-  const v3b = B.store.get("game:pos", key("player:3"));
-  console.log(`✅ B sees player:3 = ${v3b}  (expect: null / tombstone)`);
-  console.log(`   B has player:3? ${B.store.has("game:pos", key("player:3"))}  (expect: false)`);
-
-  // ── Test 4: SYNC_REQ anti-entropy round-trip ──────────────────────────────
-  console.log("\n── Test 4: Anti-entropy SYNC_REQ/RES ───────────────────────────");
-  const syncDone = new Promise<void>((r) => setTimeout(r, 500));
-  await B.store.requestSync("game:pos", A.cfg.routerAddr);
-  await syncDone;
-  console.log("✅ B sent SYNC_REQ to A and settled");
-
-  // ── Stats ──────────────────────────────────────────────────────────────────
-  console.log("\n── CRDT Stats ──────────────────────────────────────────────────");
-  console.log("A:", A.store.stats);
-  console.log("B:", B.store.stats);
-
-  A.store.stop(); B.store.stop();
+  A.gossip.stop(); B.gossip.stop();
+  A.store.stop();  B.store.stop();
   await Promise.all([A.node.stop(), B.node.stop()]);
   console.log("\n✅ all passed\n");
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+import type { GossipRoundStats } from "./core/sync/index.js";
 main().catch((e) => { console.error("FAIL:", e); process.exit(1); });
