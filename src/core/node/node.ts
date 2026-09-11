@@ -12,16 +12,13 @@ import type { NodeCfg, PeerEntry } from "./types.js";
 import { LifecycleError, NodeError } from "../../errors.js";
 
 export interface NodeEvents {
-  // Emitted when a peer transitions CONNECTING → ALIVE (first heartbeat).
   "peer:up":      [entry: PeerEntry];
-  // Emitted when ALIVE → SUSPECT (missed heartbeat window).
   "peer:suspect": [entry: PeerEntry];
-  // Emitted when SUSPECT → DEAD (evicted). Transport disconnects automatically.
   "peer:down":    [entry: PeerEntry];
-  // Delta envelope forwarded from transport — consumers attach here.
   "delta":        [env: Envelope];
-  // Emitted when a sync request arrives — caller must call respond().
   "syncReq":      [env: Envelope, respond: (body: unknown) => Promise<void>];
+  // Emitted when a SYNC_RES arrives — used by MeshRouter for RTT measurement.
+  "syncRes":      [env: Envelope];
   "fatal":        [err: Error];
 }
 
@@ -157,7 +154,7 @@ export class Node extends EventEmitter<NodeEvents> {
     this.transport.on("leave",     (env) => this.onLeave(env));
     this.transport.on("delta",     (env) => { this.tickClockFromPeer(env.seq); this.emit("delta", env); });
     this.transport.on("syncReq",   (env, respond) => { this.tickClockFromPeer(env.seq); this.emit("syncReq", env, respond); });
-    this.transport.on("syncRes",   (env) => { this.tickClockFromPeer(env.seq); });
+    this.transport.on("syncRes",   (env) => { this.tickClockFromPeer(env.seq); this.emit("syncRes", env); });
     this.transport.on("fatal",     (err) => this.emit("fatal", err));
   }
 
