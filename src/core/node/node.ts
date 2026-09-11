@@ -116,6 +116,16 @@ export class Node extends EventEmitter<NodeEvents> {
     this.keyCount = n;
   }
 
+  dialRouter(addr: string): void {
+    this.assertLive("dialRouter");
+    this.transport.dialRouter(addr);
+  }
+
+  async rpcSend(type: MessageType, body: unknown): Promise<bigint> {
+    this.assertLive("rpcSend");
+    return this.transport.rpcSend(type, body);
+  }
+
   get peers(): IterableIterator<PeerEntry> {
     return this.reg.all();
   }
