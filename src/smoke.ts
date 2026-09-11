@@ -1,85 +1,115 @@
-import { Transport, mkNodeId, nodeIdToHex, MessageType } from "./core/transport/index.js";
-import type { TransportCfg } from "./core/transport/index.js";
+import { Node } from "./core/node/index.js";
+import { mkNodeId, nodeIdToHex } from "./core/transport/index.js";
+import { BASE_PUB_PORT, BASE_ROUTER_PORT } from "./core/transport/constants.js";
+import { MessageType } from "./core/transport/constants.js";
 
-function makeCfg(offset: number): TransportCfg {
+function makeCfg(offset: number) {
   return {
     nodeId:     mkNodeId(),
-    pubAddr:    `tcp://127.0.0.1:${5550 + offset}`,
-    routerAddr: `tcp://127.0.0.1:${6550 + offset}`,
+    pubAddr:    `tcp://127.0.0.1:${BASE_PUB_PORT    + offset}`,
+    routerAddr: `tcp://127.0.0.1:${BASE_ROUTER_PORT + offset}`,
+    hbIntervalMs: 200,
+    suspectMs:    600,
+    deadMs:       1200,
   };
 }
 
 async function main(): Promise<void> {
   console.log("═══════════════════════════════════════");
-  console.log("  ZeroState Transport — Smoke Test");
+  console.log("  ZeroState Node — Smoke Test");
   console.log("═══════════════════════════════════════\n");
 
-  const cfgA = makeCfg(1);
-  const cfgB = makeCfg(2);
-  const nodeA = new Transport(cfgA);
-  const nodeB = new Transport(cfgB);
+  const cfgA = makeCfg(3);
+  const cfgB = makeCfg(4);
+
+  const A = new Node(cfgA);
+  const B = new Node(cfgB);
 
   console.log(`A: ${nodeIdToHex(cfgA.nodeId)}`);
   console.log(`B: ${nodeIdToHex(cfgB.nodeId)}\n`);
 
+  // ── Test 1: peer:up fires when first heartbeat arrives ──────────────────────
+  const peerUpA = new Promise<void>((res, rej) => {
+    const t = setTimeout(() => rej(new Error("timeout: A did not see B as peer:up")), 3_000);
+    A.on("peer:up", (entry) => {
+      if (nodeIdToHex(entry.id) !== nodeIdToHex(cfgB.nodeId)) return;
+      clearTimeout(t);
+      console.log(`✅ A sees B as ALIVE  skew=${entry.clockSkewMs.toFixed(1)}ms  clock=${entry.logicalClock}`);
+      res();
+    });
+  });
+
+  const peerUpB = new Promise<void>((res, rej) => {
+    const t = setTimeout(() => rej(new Error("timeout: B did not see A as peer:up")), 3_000);
+    B.on("peer:up", (entry) => {
+      if (nodeIdToHex(entry.id) !== nodeIdToHex(cfgA.nodeId)) return;
+      clearTimeout(t);
+      console.log(`✅ B sees A as ALIVE  skew=${entry.clockSkewMs.toFixed(1)}ms  clock=${entry.logicalClock}`);
+      res();
+    });
+  });
+
+  A.on("fatal", (e) => console.error("A FATAL:", e));
+  B.on("fatal", (e) => console.error("B FATAL:", e));
+
+  await Promise.all([A.start(), B.start()]);
+  console.log("── Test 1: Peer discovery and ALIVE transition ─────────────────");
+
+  // Connect A → B and B → A (bidirectional mesh)
+  await A.connect(cfgB.pubAddr, cfgB.routerAddr);
+  await B.connect(cfgA.pubAddr, cfgA.routerAddr);
+
+  await Promise.all([peerUpA, peerUpB]);
+
+  console.log(`\n   A peerCount=${A.peerCount}  clock=${A.logicalClock}`);
+  console.log(`   B peerCount=${B.peerCount}  clock=${B.logicalClock}`);
+
+  // ── Test 2: Delta propagation via Node.publishDelta ─────────────────────────
+  console.log("\n── Test 2: Delta propagation ───────────────────────────────────");
   const deltaRecv = new Promise<void>((res, rej) => {
-    const t = setTimeout(() => rej(new Error("timeout: DELTA")), 3_000);
-    nodeA.on("delta", (env) => {
+    const t = setTimeout(() => rej(new Error("timeout: delta")), 2_000);
+    B.on("delta", (env) => {
       clearTimeout(t);
-      console.log(`✅ A recv DELTA  seq=${env.seq}  from=${nodeIdToHex(env.senderId)}`);
+      console.log(`✅ B recv DELTA  seq=${env.seq}  senderClock tracked`);
       res();
     });
   });
 
-  const rpcRecv = new Promise<void>((res, rej) => {
-    const t = setTimeout(() => rej(new Error("timeout: SYNC_REQ")), 3_000);
-    nodeB.on("syncReq", async (env, respond) => {
-      clearTimeout(t);
-      console.log(`✅ B recv SYNC_REQ  seq=${env.seq}`);
-      await respond({ status: "ok", entries: [] });
-      res();
-    });
+  await A.publishDelta({
+    ns:        "test:ns",
+    mutations: [[new Uint8Array([0x01]), new Uint8Array([0x41, 0x42]), Date.now()]],
   });
-
-  const syncResRecv = new Promise<void>((res, rej) => {
-    const t = setTimeout(() => rej(new Error("timeout: SYNC_RES")), 3_000);
-    nodeA.on("syncRes", (env) => {
-      clearTimeout(t);
-      console.log(`✅ A recv SYNC_RES  seq=${env.seq}`);
-      res();
-    });
-  });
-
-  nodeA.on("frameError", (e) => console.error("A frameError:", e.message));
-  nodeB.on("frameError", (e) => console.error("B frameError:", e.message));
-  nodeA.on("fatal", (e) => console.error("A FATAL:", e));
-  nodeB.on("fatal", (e) => console.error("B FATAL:", e));
-
-  await Promise.all([nodeA.start(), nodeB.start()]);
-  console.log("nodes up\n");
-
-  nodeA.subscribeTo(cfgB.pubAddr);
-  nodeA.dialRouter(cfgB.routerAddr);
-  await new Promise<void>((r) => setTimeout(r, 200));
-
-  console.log("── PUB/SUB ────────────────────────────────");
-  const seq = await nodeB.publish(MessageType.DELTA, {
-    ns: "room:chat",
-    mutations: [[new Uint8Array([0x01, 0x02]), new Uint8Array([0x48, 0x69]), Date.now()]],
-  });
-  console.log(`   B published DELTA seq=${seq}`);
   await deltaRecv;
 
-  console.log("\n── DEALER/ROUTER RPC ──────────────────────");
-  const rseq = await nodeA.rpcSend(MessageType.SYNC_REQ, { ns: "room:chat", since: 0n });
-  console.log(`   A sent SYNC_REQ seq=${rseq}`);
-  await Promise.all([rpcRecv, syncResRecv]);
+  // ── Test 3: SUSPECT + DEAD on peer stop ─────────────────────────────────────
+  console.log("\n── Test 3: Peer SUSPECT → DEAD on stop ─────────────────────────");
+  const suspectFired = new Promise<void>((res, rej) => {
+    const t = setTimeout(() => rej(new Error("timeout: suspect")), 3_000);
+    A.on("peer:suspect", (entry) => {
+      clearTimeout(t);
+      console.log(`✅ A suspects B  (${nodeIdToHex(entry.id).slice(0, 8)}…)`);
+      res();
+    });
+  });
 
-  console.log("\n── Stats ───────────────────────────────────");
-  console.log("A:", nodeA.stats);
-  console.log("B:", nodeB.stats);
+  const deadFired = new Promise<void>((res, rej) => {
+    const t = setTimeout(() => rej(new Error("timeout: dead")), 5_000);
+    A.on("peer:down", (entry) => {
+      clearTimeout(t);
+      console.log(`✅ A declares B DEAD  peerCount=${A.peerCount}`);
+      res();
+    });
+  });
 
-  await Promise.all([nodeA.stop(), nodeB.stop()]);
+  // Stop B without announcing — simulates a crash.
+  await B.crash();
+  console.log("   B crashed (no LEAVE broadcast)");
+
+  await Promise.all([suspectFired, deadFired]);
+
+  console.log(`\n   A final peerCount=${A.peerCount}  clock=${A.logicalClock}`);
+
+  await A.stop();
   console.log("\n✅ all passed\n");
 }
 

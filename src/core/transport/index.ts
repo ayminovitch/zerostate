@@ -1,7 +1,7 @@
 export { Transport }                          from "./transport.js";
 export type { TransportEvents }               from "./transport.js";
 export { mkNodeId, nodeIdsEq, cmpNodeId }     from "./identity.js";
-export { nodeIdToHex, hexToNodeId }           from "./codec.js";
+export { nodeIdToHex, hexToNodeId, decode_payload as decodePayload } from "./codec.js";
 export { getCtx, setCtx, destroyCtx }         from "./context.js";
 export type {
   NodeId, Envelope,
