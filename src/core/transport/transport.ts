@@ -7,7 +7,7 @@ import {
   MessageType,
   HWM_SEND, HWM_RECV, LINGER_MS, RECONNECT_IVL_MS,
 } from "./constants.js";
-import { ZapHandler } from "../security/zap-handler.js";
+import { getZapHandler } from "../security/zap-handler.js";
 
 export interface TransportEvents {
   delta:      [env: Envelope];
@@ -29,7 +29,8 @@ export class Transport extends EventEmitter<TransportEvents> {
   private readonly rtr:  Router;
   private readonly dlr:  Dealer;
   private readonly ac:   AbortController = new AbortController();
-  private readonly zap:  ZapHandler | null;
+  // null when security is disabled. Shared singleton per ZMQ context.
+  private readonly zap = getZapHandler();
 
   private live    = false;
   private closing = false;
@@ -55,7 +56,6 @@ export class Transport extends EventEmitter<TransportEvents> {
   constructor(cfg: TransportCfg) {
     super();
     this.cfg = cfg;
-    this.zap = cfg.security ? new ZapHandler(cfg.security.keyStore) : null;
 
     this.pub = new Publisher();
     this.pub.sendHighWaterMark = HWM_SEND;
@@ -79,7 +79,10 @@ export class Transport extends EventEmitter<TransportEvents> {
     this.dlr.reconnectInterval = RECONNECT_IVL_MS;
     this.dlr.routingId = Buffer.from(cfg.nodeId).toString("binary");
 
-    if (cfg.security) this.applyServerCurve(cfg.security.keyStore);
+    if (cfg.security) {
+      this.zap.register(cfg.security.keyStore);
+      this.applyServerCurve(cfg.security.keyStore);
+    }
   }
 
   // Sets CURVE server options on bind sockets. Must run before start().
@@ -100,7 +103,7 @@ export class Transport extends EventEmitter<TransportEvents> {
     if (this.closing) throw new LifecycleError("transport is shutting down");
 
     // ZAP handler must be bound before any CURVE-enabled socket binds.
-    if (this.zap) await this.zap.start();
+    if (this.cfg.security) await this.zap.start();
 
     this.sub.subscribe("");
     await Promise.all([
@@ -127,8 +130,9 @@ export class Transport extends EventEmitter<TransportEvents> {
     this.sub.close();
     this.rtr.close();
     this.dlr.close();
-    // ZAP handler closed after sockets — ensures all pending auth responses drain.
-    this.zap?.stop();
+    // ZAP handler ref-counted: only closes after last Transport.stop().
+    if (this.cfg.security) this.zap.stop();
+    if (this.cfg.security) this.zap.unregister(this.cfg.security.keyStore);
     this.emit("stopped");
   }
 

@@ -23,24 +23,51 @@ const ZAP_ADDR = "inproc://zeromq.zap.01";
 //   [5] status-text
 //   [6] user-id
 //   [7] metadata
+//
+// Only ONE ZAP handler may be bound per ZMQ context (inproc is context-scoped).
+// In multi-node processes, all KeyStores must be registered with the singleton
+// before start(), and the handler fans out by domain or by allowlist union.
+
+let instance: ZapHandler | null = null;
+
+export function getZapHandler(): ZapHandler {
+  if (!instance) instance = new ZapHandler();
+  return instance;
+}
 
 export class ZapHandler {
   private sock: Router | null = null;
+  private readonly stores: Set<KeyStore> = new Set();
+  private refcount = 0;
 
-  constructor(private readonly store: KeyStore) {}
+  // Register an additional KeyStore. All registered stores are checked
+  // in order on each ZAP request — any single allow wins.
+  register(store: KeyStore): void {
+    this.stores.add(store);
+  }
+
+  unregister(store: KeyStore): void {
+    this.stores.delete(store);
+  }
 
   async start(): Promise<void> {
+    this.refcount++;
+    if (this.refcount > 1) return; // already running
+
     this.sock = new Router();
-    // ZAP handler must never buffer requests — linger 0 ensures clean shutdown.
     this.sock.linger = 0;
     await this.sock.bind(ZAP_ADDR);
     void this.loop();
   }
 
   stop(): void {
+    this.refcount = Math.max(0, this.refcount - 1);
+    if (this.refcount > 0) return; // other transports still active
+
     if (!this.sock) return;
     this.sock.close();
     this.sock = null;
+    instance   = null;
   }
 
   private async loop(): Promise<void> {
@@ -51,7 +78,6 @@ export class ZapHandler {
       }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      // ETERM = context terminated (normal shutdown). EAGAIN = no more messages.
       if (code !== "ETERM" && code !== "EAGAIN") throw err;
     }
   }
@@ -64,8 +90,9 @@ export class ZapHandler {
     const mechanism = frames[7]?.toString() ?? "";
     const creds     = frames[8];
 
+    // Union allowlist: any registered KeyStore that allows the peer = granted.
     const allowed = mechanism === "CURVE" && creds !== undefined
-      ? this.store.isAllowed(creds)
+      ? [...this.stores].some((s) => s.isAllowed(creds))
       : false;
 
     await this.sock.send([
@@ -75,8 +102,8 @@ export class ZapHandler {
       requestId,
       Buffer.from(allowed ? "200" : "400"),
       Buffer.from(allowed ? "OK"  : "Unauthorized"),
-      Buffer.alloc(0),  // user-id
-      Buffer.alloc(0),  // metadata
+      Buffer.alloc(0),
+      Buffer.alloc(0),
     ]);
   }
 }
