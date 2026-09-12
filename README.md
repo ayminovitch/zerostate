@@ -1,6 +1,6 @@
 # ZeroState
 
-[![NPM Version](https://img.shields.io/npm/v/zerostate)](https://npmjs.com/package/zerostate)
+[![NPM Version](https://img.shields.io/npm/v/@ayminovitch/zerostate)](https://npmjs.com/package/@ayminovitch/zerostate)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 ## The Hard Problem
@@ -10,7 +10,7 @@ Centralized state brokers like Redis Pub/Sub introduce a mandatory network hop a
 ## Installation
 
 ```bash
-npm install zerostate zeromq
+npm install @ayminovitch/zerostate zeromq
 ```
 
 ## Architecture Diagram
@@ -54,7 +54,7 @@ Tested on a local cluster (M1 Max, Node.js v20.0.0) under a constant load of 10,
 ## Quick Start
 
 ```typescript
-import { ZeroState, generateKeypair, KeyStore } from "zerostate";
+import { ZeroState, generateKeypair, KeyStore } from "@ayminovitch/zerostate";
 
 // 1. Generate node identities and mutual trust allowlists
 const kpA = generateKeypair();
