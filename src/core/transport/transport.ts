@@ -33,6 +33,10 @@ class SendQueue {
     void this.flush();
   }
 
+  clear(): void {
+    this.queue.length = 0;
+  }
+
   private async flush() {
     if (this.sending) return;
     this.sending = true;
@@ -160,6 +164,15 @@ export class Transport extends EventEmitter<TransportEvents> {
 
     this.ac.abort();
     await new Promise<void>((r) => setImmediate(r));
+
+    this.pubQ.clear();
+    this.rtrQ.clear();
+    this.dlrQ.clear();
+
+    this.pub.linger = 0;
+    this.sub.linger = 0;
+    this.rtr.linger = 0;
+    this.dlr.linger = 0;
 
     this.pub.close();
     this.sub.close();
