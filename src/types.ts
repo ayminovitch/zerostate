@@ -1,9 +1,9 @@
-import type { NodeId }        from "../core/transport/types.js";
-import type { KeyStore }      from "../core/security/key-store.js";
-import type { GossipCfg }    from "../core/sync/types.js";
-import type { RouterCfg, BackpressureLevel, RouteEntry } from "../core/router/types.js";
-import type { TransportStats } from "../core/transport/types.js";
-import type { PeerEntry, PeerState } from "../core/node/types.js";
+import type { NodeId }        from "./core/transport/types.js";
+import type { KeyStore }      from "./core/security/key-store.js";
+import type { GossipCfg }    from "./core/sync/types.js";
+import type { RouterCfg, BackpressureLevel, RouteEntry } from "./core/router/types.js";
+import type { TransportStats } from "./core/transport/types.js";
+import type { PeerEntry, PeerState } from "./core/node/types.js";
 
 /**
  * Configuration for a ZeroState mesh node.

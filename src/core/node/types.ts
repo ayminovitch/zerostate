@@ -22,7 +22,8 @@ export interface PeerEntry {
   clockSkewMs:     number;
 }
 
-export interface NodeCfg extends TransportCfg {
+export interface NodeCfg extends Omit<TransportCfg, "nodeId"> {
+  nodeId?:      NodeId;  // auto-generated if omitted
   hbIntervalMs?:      number;
   suspectMs?:         number;
   deadMs?:            number;
