@@ -52,7 +52,7 @@
   "scripts": {
     "build": "tsup && tsc --project tsconfig.build.json --emitDeclarationOnly --outDir dist",
     "dev": "tsup --watch",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test --test-timeout=8000 tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx src/smoke.ts",
     "bench": "node --expose-gc --import tsx src/bench.ts",
