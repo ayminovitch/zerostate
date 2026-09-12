@@ -1,5 +1,5 @@
 {
-  "name": "zerostate",
+  "name": "@ayminovitch/zerostate",
   "version": "1.0.0",
   "description": "Decentralized, low-latency live state-sync mesh built on ZeroMQ and CRDTs",
   "author": "Aymen Hammami (https://aymen-hammami.com)",

@@ -91,3 +91,15 @@ nodeB.on("change", (ns, key, value) => {
 // 5. Mutate state locally (propagates instantly)
 await nodeA.set("system:config", "feature_flags", { betaMode: true });
 ```
+
+## Production Notes
+
+* **High Water Mark (HWM) Tuning**: ZeroMQ socket HWMs apply backpressure directly via edge-triggered token buckets in the `MeshRouter`. Ensure your token bucket `maxTokens` matches your HWM boundaries to cleanly shed excess load instead of infinitely queueing and causing catastrophic heap growth.
+* **OOM Prevention**: During severe network partitions, the built-in GossipEngine bounds anti-entropy memory usage by paginating synchronization deltas via `LwwSet` tombstones and maximum sequence numbers, completely eliminating node crash loops under backlogs.
+* **Conflict Resolution**: ZeroState's CRDT resolves concurrent mutations deterministically using a hybrid clock hierarchy: wall-clock timestamp `ts`, followed by Lamport logical `seq`, and finally lexicographic tie-breaking on `nodeId`. This guarantees identical end states across the mesh regardless of arrival order.
+
+## Author
+
+Architected by Aymen Hammami
+* Portfolio: [https://aymen-hammami.com](https://aymen-hammami.com)
+* Contact: hello@aymen-hammami.com
