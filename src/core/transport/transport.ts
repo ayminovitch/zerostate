@@ -22,12 +22,43 @@ export interface TransportEvents {
   stopped:    [];
 }
 
+class SendQueue {
+  private readonly queue: Uint8Array[][] = [];
+  private sending = false;
+
+  constructor(private readonly sock: { send: (f: Uint8Array[]) => Promise<void> }) {}
+
+  async send(frames: Uint8Array[]): Promise<void> {
+    this.queue.push(frames);
+    void this.flush();
+  }
+
+  private async flush() {
+    if (this.sending) return;
+    this.sending = true;
+    while (this.queue.length > 0) {
+      const frames = this.queue.shift()!;
+      try {
+        await this.sock.send(frames);
+      } catch (e) {
+        // We drop on failure; TCP reconnects handles recovery
+      }
+    }
+    this.sending = false;
+  }
+}
+
 export class Transport extends EventEmitter<TransportEvents> {
   private readonly cfg:  TransportCfg;
   private readonly pub:  Publisher;
   private readonly sub:  Subscriber;
   private readonly rtr:  Router;
   private readonly dlr:  Dealer;
+
+  private readonly pubQ: SendQueue;
+  private readonly rtrQ: SendQueue;
+  private readonly dlrQ: SendQueue;
+
   private readonly ac:   AbortController = new AbortController();
   // null when security is disabled. Shared singleton per ZMQ context.
   private readonly zap = getZapHandler();
@@ -78,6 +109,10 @@ export class Transport extends EventEmitter<TransportEvents> {
     this.dlr.linger = LINGER_MS;
     this.dlr.reconnectInterval = RECONNECT_IVL_MS;
     this.dlr.routingId = Buffer.from(cfg.nodeId).toString("binary");
+
+    this.pubQ = new SendQueue(this.pub);
+    this.rtrQ = new SendQueue(this.rtr);
+    this.dlrQ = new SendQueue(this.dlr);
 
     if (cfg.security) {
       this.zap.register(cfg.security.keyStore);
@@ -166,7 +201,7 @@ export class Transport extends EventEmitter<TransportEvents> {
     this.assertLive("publish");
     const seq    = this.nextSeq(type);
     const frames = assemble(this.cfg.nodeId, type, seq, body);
-    await this.pub.send(frames);
+    await this.pubQ.send(frames);
     this.trackTx(frames);
     return seq;
   }
@@ -175,7 +210,7 @@ export class Transport extends EventEmitter<TransportEvents> {
     this.assertLive("rpcSend");
     const seq    = this.nextSeq(type);
     const frames = assemble(this.cfg.nodeId, type, seq, body);
-    await this.dlr.send(frames);
+    await this.dlrQ.send(frames);
     this.trackTx(frames);
     return seq;
   }
@@ -225,7 +260,7 @@ export class Transport extends EventEmitter<TransportEvents> {
         this.ingest(payload, async (resBody) => {
           const seq    = this.nextSeq(MessageType.SYNC_RES);
           const rFrames = assemble(this.cfg.nodeId, MessageType.SYNC_RES, seq, resBody);
-          await this.rtr.send([rid, ...rFrames]);
+          await this.rtrQ.send([rid, ...rFrames]);
           this.trackTx(rFrames);
         });
       }
