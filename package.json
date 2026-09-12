@@ -52,7 +52,6 @@
   "scripts": {
     "build": "tsup && tsc --project tsconfig.build.json --emitDeclarationOnly --outDir dist",
     "dev": "tsup --watch",
-    "lint": "eslint src/**/*.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx src/smoke.ts",
