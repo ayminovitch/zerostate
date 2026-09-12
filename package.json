@@ -53,6 +53,7 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx src/smoke.ts",
+    "bench": "node --expose-gc --import tsx src/bench.ts",
     "prepublishOnly": "npm run build && npm run typecheck"
   },
   "dependencies": {
