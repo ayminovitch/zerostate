@@ -7,6 +7,7 @@ import {
   MessageType,
   HWM_SEND, HWM_RECV, LINGER_MS, RECONNECT_IVL_MS,
 } from "./constants.js";
+import { ZapHandler } from "../security/zap-handler.js";
 
 export interface TransportEvents {
   delta:      [env: Envelope];
@@ -28,6 +29,7 @@ export class Transport extends EventEmitter<TransportEvents> {
   private readonly rtr:  Router;
   private readonly dlr:  Dealer;
   private readonly ac:   AbortController = new AbortController();
+  private readonly zap:  ZapHandler | null;
 
   private live    = false;
   private closing = false;
@@ -53,6 +55,7 @@ export class Transport extends EventEmitter<TransportEvents> {
   constructor(cfg: TransportCfg) {
     super();
     this.cfg = cfg;
+    this.zap = cfg.security ? new ZapHandler(cfg.security.keyStore) : null;
 
     this.pub = new Publisher();
     this.pub.sendHighWaterMark = HWM_SEND;
@@ -67,8 +70,6 @@ export class Transport extends EventEmitter<TransportEvents> {
     this.rtr.sendHighWaterMark    = HWM_SEND;
     this.rtr.receiveHighWaterMark = HWM_RECV;
     this.rtr.linger    = LINGER_MS;
-    // Throw on unroutable sends instead of silently dropping —
-    // routing failures must surface, not vanish.
     this.rtr.mandatory = true;
 
     this.dlr = new Dealer();
@@ -76,14 +77,30 @@ export class Transport extends EventEmitter<TransportEvents> {
     this.dlr.receiveHighWaterMark = HWM_RECV;
     this.dlr.linger = LINGER_MS;
     this.dlr.reconnectInterval = RECONNECT_IVL_MS;
-    // Stamping routingId lets the remote ROUTER correlate replies to us
-    // without a handshake round-trip.
     this.dlr.routingId = Buffer.from(cfg.nodeId).toString("binary");
+
+    if (cfg.security) this.applyServerCurve(cfg.security.keyStore);
+  }
+
+  // Sets CURVE server options on bind sockets. Must run before start().
+  // ZAP handler is started first so it is ready when the bind triggers
+  // the first ZMQ internal auth check.
+  private applyServerCurve(ks: { publicKey: string; secretKey: string }): void {
+    this.pub.curveServer    = true;
+    this.pub.curvePublicKey = ks.publicKey;
+    this.pub.curveSecretKey = ks.secretKey;
+
+    this.rtr.curveServer    = true;
+    this.rtr.curvePublicKey = ks.publicKey;
+    this.rtr.curveSecretKey = ks.secretKey;
   }
 
   async start(): Promise<void> {
     if (this.live)    throw new LifecycleError("transport already started");
     if (this.closing) throw new LifecycleError("transport is shutting down");
+
+    // ZAP handler must be bound before any CURVE-enabled socket binds.
+    if (this.zap) await this.zap.start();
 
     this.sub.subscribe("");
     await Promise.all([
@@ -110,11 +127,19 @@ export class Transport extends EventEmitter<TransportEvents> {
     this.sub.close();
     this.rtr.close();
     this.dlr.close();
+    // ZAP handler closed after sockets — ensures all pending auth responses drain.
+    this.zap?.stop();
     this.emit("stopped");
   }
 
-  subscribeTo(addr: string): void {
+  // serverKey is the peer's Z85 public key (as returned by curveKeyPair).
+  subscribeTo(addr: string, serverKey?: string): void {
     this.assertLive("subscribeTo");
+    if (serverKey && this.cfg.security) {
+      this.sub.curvePublicKey = this.cfg.security.keyStore.publicKey;
+      this.sub.curveSecretKey = this.cfg.security.keyStore.secretKey;
+      this.sub.curveServerKey = serverKey;
+    }
     void this.sub.connect(addr);
   }
 
@@ -123,8 +148,13 @@ export class Transport extends EventEmitter<TransportEvents> {
     void this.sub.disconnect(addr);
   }
 
-  dialRouter(addr: string): void {
+  dialRouter(addr: string, serverKey?: string): void {
     this.assertLive("dialRouter");
+    if (serverKey && this.cfg.security) {
+      this.dlr.curvePublicKey = this.cfg.security.keyStore.publicKey;
+      this.dlr.curveSecretKey = this.cfg.security.keyStore.secretKey;
+      this.dlr.curveServerKey = serverKey;
+    }
     void this.dlr.connect(addr);
   }
 
