@@ -46,11 +46,14 @@
   "files": [
     "dist",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "package.json"
   ],
   "scripts": {
     "build": "tsup && tsc --project tsconfig.build.json --emitDeclarationOnly --outDir dist",
     "dev": "tsup --watch",
+    "lint": "eslint src/**/*.ts",
+    "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx src/smoke.ts",
     "bench": "node --expose-gc --import tsx src/bench.ts",
