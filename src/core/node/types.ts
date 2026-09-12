@@ -23,12 +23,11 @@ export interface PeerEntry {
 }
 
 export interface NodeCfg extends TransportCfg {
-  // How often this node broadcasts its heartbeat.
   hbIntervalMs?:      number;
-  // No heartbeat within this window → ALIVE becomes SUSPECT.
   suspectMs?:         number;
-  // No heartbeat within this window after SUSPECT → DEAD + evict.
   deadMs?:            number;
+  // When provided, the node's transport uses CURVE encryption and ZAP auth.
+  // security is forwarded directly to TransportCfg.
 }
 
 // Defaults exposed so the liveness checker can reference them without a Node instance.

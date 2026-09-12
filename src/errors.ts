@@ -42,3 +42,7 @@ export class NodeError extends ZeroStateError {
 export class CrdtError extends ZeroStateError {
   override readonly name: string = "CrdtError";
 }
+
+export class SecurityError extends ZeroStateError {
+  override readonly name: string = "SecurityError";
+}

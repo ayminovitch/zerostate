@@ -1,4 +1,5 @@
 import type { MessageType } from "./constants.js";
+import type { KeyStore } from "../security/key-store.js";
 
 // Branded type prevents passing a plain Uint8Array where a NodeId is expected.
 // We stay binary throughout the hot path; hex conversion is diagnostics-only.
@@ -49,6 +50,8 @@ export interface TransportCfg {
   readonly nodeId:     NodeId;
   readonly pubAddr:    string;
   readonly routerAddr: string;
+  // When provided, all sockets are CURVE-encrypted and ZAP-authenticated.
+  readonly security?:  { readonly keyStore: KeyStore };
 }
 
 export interface TransportStats {

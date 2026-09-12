@@ -92,10 +92,11 @@ export class Node extends EventEmitter<NodeEvents> {
   // Connect to a peer by providing its PUB and ROUTER addresses.
   // This is the primary peer-discovery entry point; in a full cluster
   // the discovery layer calls this on bootstrap (Step 6).
-  async connect(pubAddr: string, routerAddr: string): Promise<void> {
+  // peerKey is the peer's Z85 CURVE public key. Required when security is enabled.
+  async connect(pubAddr: string, routerAddr: string, peerKey?: string): Promise<void> {
     this.assertLive("connect");
-    this.transport.subscribeTo(pubAddr);
-    this.transport.dialRouter(routerAddr);
+    this.transport.subscribeTo(pubAddr, peerKey);
+    this.transport.dialRouter(routerAddr, peerKey);
     // We don't add the peer to the registry yet. We wait for their JOIN
     // or first heartbeat — that's when we learn their NodeId.
   }
@@ -113,9 +114,13 @@ export class Node extends EventEmitter<NodeEvents> {
     this.keyCount = n;
   }
 
-  dialRouter(addr: string): void {
+  dialRouter(addr: string, serverKey?: string): void {
     this.assertLive("dialRouter");
-    this.transport.dialRouter(addr);
+    try {
+      this.transport.dialRouter(addr, serverKey);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EINVAL") throw err;
+    }
   }
 
   async rpcSend(type: MessageType, body: unknown): Promise<bigint> {
